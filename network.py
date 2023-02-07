@@ -1,12 +1,12 @@
-import torch
 import torch.nn as nn
+
+from kornia.color import rgb_to_xyz, xyz_to_rgb
 
 
 class RestoreNetBlock(nn.Module):
     def __init__(self, in_c, out_c,
-                 kernel=kernel,
-                 stride=stride,
-                 padding=padding, n=3):
+                 kernel, stride,
+                 padding, n=3):
         super(RestoreNetBlock, self).__init__()
 
         self.block = nn.Sequential()
@@ -24,9 +24,8 @@ class RestoreNetBlock(nn.Module):
 
 class EnhanceNetBlock(nn.Module):
     def __init__(self, in_c, out_c,
-                 kernel=kernel,
-                 stride=stride,
-                 padding=padding, n=3):
+                 kernel, stride,
+                 padding, n=3):
         super(EnhanceNetBlock, self).__init__()
 
         self.block = nn.Sequential()
@@ -41,6 +40,7 @@ class EnhanceNetBlock(nn.Module):
             self.block.append(nn.ReLU())
 
     def forward(self, x):
+        # skip connections
         x = self.block[0](x) + x.clone()
         return self.block[1:](x)
 
@@ -57,50 +57,67 @@ class GlobalComponent(nn.Module):
 
     def forward(self, x):
         return self.lin(self.pool(x))
-    
+
 
 class UNet(nn.Module):
     def __init__(self, block):
         super(UNet, self).__init__()
 
         Block = block
-        self.net = nn.Sequential()
+        self.down_sample = nn.Sequential()
 
+        # [TODO] this wont work coz forward func,
+        # fix -> put both Block() ans Pool() in same seq elem
         # 1
-        self.net.append(Block(in_c=32, out=))
-        self.net.append(nn.MaxPool2d(2))
+        self.down_sample.append(Block(in_c=32, out=32))
+        self.down_sample.append(nn.MaxPool2d(2))
         # 2
-        self.net.append(Block(in_c=64, out=))
-        self.net.append(nn.MaxPool2d(2))
+        self.down_sample.append(Block(in_c=64, out=64))
+        self.down_sample.append(nn.MaxPool2d(2))
         # 3
-        self.net.append(Block(in_c=128, out=))
-        self.net.append(nn.MaxPool2d(2))
+        self.down_sample.append(Block(in_c=128, out=128))
+        self.down_sample.append(nn.MaxPool2d(2))
         # 4
-        self.net.append(Block(in_c=256, out=))
-        self.net.append(nn.MaxPool2d(2))
+        self.down_sample.append(Block(in_c=256, out=256))
+        self.down_sample.append(nn.MaxPool2d(2))
         # 5
-        self.net.append(Block(in_c=512, out=))
+        self.mid = Block(in_c=512, out=512)
         # self.net.append(UpSampling(2))
 
         # GlobalComponent
-        self.net.append(GlobalComponent())
+        self.global_component = GlobalComponent()
         # Add scaling
-        # self.net.append(Scale())
+        # self.scaling = Scale()
 
+        self.up_sample = nn.Sequential()
         # 6
-        self.net.append(Block(in_c=256, out=))
-        # self.net.append(UpSampling(2))
+        self.up_sample.append(Block(in_c=256, out=256))
+        self.up_sample.append(UpSampling(2))
         # 7
-        self.net.append(Block(in_c=128, out=))
-        # self.net.append(UpSampling(2))
+        self.up_sample.append(Block(in_c=128, out=128))
+        self.up_sample.append(UpSampling(2))
         # 8
-        self.net.append(Block(in_c=64, out=))
-        # self.net.append(UpSampling(2))
+        self.up_sample.append(Block(in_c=64, out=64))
+        self.up_sample.append(UpSampling(2))
         # 9
-        self.net.append(Block(in_c=32, out=))
+        self.up_sample.append(Block(in_c=32, out=32))
 
     def forward(self, x):
-        return x
+        # weird system with lists,
+        # but i didnt come up with anything better
+        d = [x]
+        for i in self.down_sample:
+            d.append(i(d[-1]))
+
+        m = self.global_component(d[-1])
+        m = self.scaling(d[-1], m)
+
+        u = [m]
+        for idx, i in enumerate(self.up_sample):
+            # skip connections
+            u.append(i(d[-1]) + d[-idx + 1])
+
+        return u[-1]
 
 
 # [TODO] fix "Given input size: (64x1x1).
@@ -120,13 +137,19 @@ class CameraNet(nn.Module):
         super(CameraNet, self).__init__()
 
         # RGB to XYZ transform
-        # self.rgb2xyz = ...
+        self.rgb2xyz = rgb_to_xyz
         self.restore = UNet(block=RestoreNetBlock)
         # XYZ to RGB transform
-        # self.xyz2rgb = ...
+        self.xyz2rgb = xyz_to_rgb
         self.enhance = UNet(block=RestoreNetBlock)
 
     def forward(self, x):
+        x = self.rgb2xyz(x)
+        x = self.restore(x)
+
+        x = self.xyz2rgb(x)
+        x = self.enhance(x)
+
         return x
 
 
