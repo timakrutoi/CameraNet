@@ -10,7 +10,7 @@ class RestoreNetBlock(nn.Module):
         super(RestoreNetBlock, self).__init__()
 
         self.block = nn.Sequential()
-        
+
         for _ in range(n):
             self.block.append(nn.Conv2d(in_c, out_c,
                                         kernel=kernel,
@@ -36,7 +36,7 @@ class EnhanceNetBlock(nn.Module):
                                         kernel=kernel,
                                         stride=stride,
                                         padding=padding))
-            # need to add some ActivatedBatchNorm
+            # need to add some AdaptiveBatchNorm
             # self.block.append(ABN())
             self.block.append(nn.ReLU())
 
@@ -49,12 +49,12 @@ class GlobalComponent(nn.Module):
     def __init__(self):
         super(GlobalComponent, self).__init__()
         self.pool = GlobalPool2d()
-        
+
         self.lin = nn.Sequential()
         self.lin.append(nn.Linear(512, 512))
         self.lin.append(nn.Linear(512, 512))
         self.lin.append(nn.Linear(512, 512))
-    
+
     def forward(self, x):
         return self.lin(self.pool(x))
     
@@ -65,7 +65,7 @@ class UNet(nn.Module):
 
         Block = block
         self.net = nn.Sequential()
-        
+
         # 1
         self.net.append(Block(in_c=32, out=))
         self.net.append(nn.MaxPool2d(2))
@@ -81,12 +81,12 @@ class UNet(nn.Module):
         # 5
         self.net.append(Block(in_c=512, out=))
         # self.net.append(UpSampling(2))
-        
+
         # GlobalComponent
         self.net.append(GlobalComponent())
         # Add scaling
         # self.net.append(Scale())
-        
+
         # 6
         self.net.append(Block(in_c=256, out=))
         # self.net.append(UpSampling(2))
@@ -100,8 +100,8 @@ class UNet(nn.Module):
         self.net.append(Block(in_c=32, out=))
 
     def forward(self, x):
-
         return x
+
 
 # [TODO] fix "Given input size: (64x1x1).
 # Calculated output size: (64x0x0). Output size is too small"
@@ -131,7 +131,6 @@ class CameraNet(nn.Module):
 
 
 if __name__ == '__main__':
-    net = DeepISP(2, 2)
+    net = CameraNet()
 
-    print(net.lowlevel)
-    print(net.highlevel)
+    print(net)
