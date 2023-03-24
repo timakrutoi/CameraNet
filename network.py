@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 from kornia.color import rgb_to_xyz, xyz_to_rgb
@@ -5,17 +6,18 @@ from kornia.color import rgb_to_xyz, xyz_to_rgb
 
 class RestoreNetBlock(nn.Module):
     def __init__(self, in_c, out_c,
-                 kernel, stride,
-                 padding, n=3):
+                 kernel=3, stride=1,
+                 padding=1, n=3):
         super(RestoreNetBlock, self).__init__()
 
         self.block = nn.Sequential()
 
         for _ in range(n):
             self.block.append(nn.Conv2d(in_c, out_c,
-                                        kernel=kernel,
+                                        kernel_size=kernel,
                                         stride=stride,
                                         padding=padding))
+            in_c = out_c
             self.block.append(nn.ReLU())
 
     def forward(self, x):
@@ -24,17 +26,18 @@ class RestoreNetBlock(nn.Module):
 
 class EnhanceNetBlock(nn.Module):
     def __init__(self, in_c, out_c,
-                 kernel, stride,
-                 padding, n=3):
+                 kernel=3, stride=1,
+                 padding=1, n=3):
         super(EnhanceNetBlock, self).__init__()
 
         self.block = nn.Sequential()
 
         for _ in range(n):
             self.block.append(nn.Conv2d(in_c, out_c,
-                                        kernel=kernel,
+                                        kernel_size=kernel,
                                         stride=stride,
                                         padding=padding))
+            in_c = out_c
             # need to add some AdaptiveBatchNorm
             # self.block.append(ABN())
             self.block.append(nn.ReLU())
@@ -46,90 +49,74 @@ class EnhanceNetBlock(nn.Module):
 
 
 class GlobalComponent(nn.Module):
-    def __init__(self):
+    def __init__(self, n=512):
         super(GlobalComponent, self).__init__()
-        self.pool = GlobalPool2d()
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
         self.lin = nn.Sequential()
-        self.lin.append(nn.Linear(512, 512))
-        self.lin.append(nn.Linear(512, 512))
-        self.lin.append(nn.Linear(512, 512))
+        self.lin.append(nn.Linear(n, n))
+        self.lin.append(nn.Linear(n, n))
+        self.lin.append(nn.Linear(n, n))
 
     def forward(self, x):
-        return self.lin(self.pool(x))
+        x = self.pool(x)
+        b, c, _, _ = x.shape
+        return self.lin(x.reshape(b, c))
+
+
+class UNetBlock(nn.Module):
+    def __init__(self, first_block, second_block,
+                dilation=1):
+        super(UNetBlock, self).__init__()
+
+        self.fb = first_block
+        self.sb = second_block
+
+    def forward(self, x):
+        return self.sb(self.fb(x))
 
 
 class UNet(nn.Module):
     def __init__(self, block):
         super(UNet, self).__init__()
+        dims = [3, 32, 64, 128, 256, 512]
 
-        Block = block
-        self.down_sample = nn.Sequential()
+        self.down = nn.Sequential()
+        for i, j in zip(dims[:-1], dims[1:]):
+            self.down.append(UNetBlock(first_block=block(i, j),
+                                      second_block=nn.MaxPool2d(2)))
 
-        # [TODO] this wont work coz forward func,
-        # fix -> put both Block() ans Pool() in same seq elem
-        # 1
-        self.down_sample.append(Block(in_c=32, out=32))
-        self.down_sample.append(nn.MaxPool2d(2))
-        # 2
-        self.down_sample.append(Block(in_c=64, out=64))
-        self.down_sample.append(nn.MaxPool2d(2))
-        # 3
-        self.down_sample.append(Block(in_c=128, out=128))
-        self.down_sample.append(nn.MaxPool2d(2))
-        # 4
-        self.down_sample.append(Block(in_c=256, out=256))
-        self.down_sample.append(nn.MaxPool2d(2))
-        # 5
-        self.mid = Block(in_c=512, out=512)
-        # self.net.append(UpSampling(2))
+        self.mid = block(in_c=512, out_c=512)
 
         # GlobalComponent
-        self.global_component = GlobalComponent()
-        # Add scaling
-        # self.scaling = Scale()
+        self.global_component = GlobalComponent(n=512)
 
-        self.up_sample = nn.Sequential()
-        # 6
-        self.up_sample.append(Block(in_c=256, out=256))
-        self.up_sample.append(UpSampling(2))
-        # 7
-        self.up_sample.append(Block(in_c=128, out=128))
-        self.up_sample.append(UpSampling(2))
-        # 8
-        self.up_sample.append(Block(in_c=64, out=64))
-        self.up_sample.append(UpSampling(2))
-        # 9
-        self.up_sample.append(Block(in_c=32, out=32))
+        dils = [1, 2, 2, 4, 8]
+        self.up = nn.Sequential()
+        for i, j, k in zip(dims[:0:-1], dims[-2::-1], dils):
+            self.up.append(UNetBlock(dilation=k,
+                                     first_block=nn.Upsample(scale_factor=2),
+                                     second_block=block(i, j)))
 
     def forward(self, x):
         # weird system with lists,
         # but i didnt come up with anything better
         d = [x]
-        for i in self.down_sample:
+        for i in self.down:
             d.append(i(d[-1]))
 
         m = self.global_component(d[-1])
-        m = self.scaling(d[-1], m)
+        # ???
+        m = torch.einsum('bcij,bc->bcij', self.mid(d[-1]), m)
 
         u = [m]
-        for idx, i in enumerate(self.up_sample):
+        for idx, i in enumerate(self.up):
             # skip connections
-            u.append(i(d[-1]) + d[-idx + 1])
+            a = i(u[-1])
+            print(a.shape, d[-idx - 2].shape)
+            u.append(a + d[-idx - 2])
 
         return u[-1]
-
-
-# [TODO] fix "Given input size: (64x1x1).
-# Calculated output size: (64x0x0). Output size is too small"
-# when nhl is too big for img
-class GlobalPool2d(nn.Module):
-    def __init__(self):
-        super(GlobalPool2d, self).__init__()
-
-    def forward(self, x):
-        b, c, w, h = x.shape
-        return nn.functional.avg_pool2d(x, kernel_size=(h, w)).reshape((b, c))
 
 
 class CameraNet(nn.Module):
