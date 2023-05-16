@@ -47,8 +47,11 @@ class S7DatasetCN(Dataset):
         random.shuffle(self.dirs)
         
         # :C i didnt make a mid pic for this
-        for i in range(9):
-            self.dirs.remove(f'20161109_224805_{i}')
+        try:
+            for i in range(9):
+                self.dirs.remove(f'20161109_224805_{i}')
+        except ValueError:
+            pass
         self.fname = 'medium_exposure'
         
         tmp_len = len(self.dirs)
